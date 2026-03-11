@@ -9,6 +9,8 @@ import CartProvider from '../providers/Cart.provider';
 import { ThemeProvider } from 'styled-components';
 import Theme from '../styles/Theme';
 import FrontendTracer from '../utils/telemetry/FrontendTracer';
+import initFaro, { getFaro } from '../utils/telemetry/FaroInit';
+import FaroErrorBoundary from '../components/FaroErrorBoundary';
 import SessionGateway from '../gateways/Session.gateway';
 import { OpenFeatureProvider, OpenFeature } from '@openfeature/react-sdk';
 import { FlagdWebProvider } from '@openfeature/flagd-web-provider';
@@ -25,9 +27,11 @@ declare global {
 }
 
 if (typeof window !== 'undefined') {
+  initFaro();
   FrontendTracer();
   if (window.location) {
     const session = SessionGateway.getSession();
+    getFaro()?.api.setUser({ id: session.userId });
 
     // Set context prior to provider init to avoid multiple http calls
     OpenFeature.setContext({ targetingKey: session.userId, ...session }).then(() => {
@@ -65,7 +69,9 @@ function MyApp({ Component, pageProps }: AppProps) {
         <QueryClientProvider client={queryClient}>
           <CurrencyProvider>
             <CartProvider>
-              <Component {...pageProps} />
+              <FaroErrorBoundary>
+                <Component {...pageProps} />
+              </FaroErrorBoundary>
             </CartProvider>
           </CurrencyProvider>
         </QueryClientProvider>

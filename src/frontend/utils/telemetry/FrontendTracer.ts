@@ -9,7 +9,10 @@ import { getWebAutoInstrumentations } from '@opentelemetry/auto-instrumentations
 import { Resource, browserDetector } from '@opentelemetry/resources';
 import { SEMRESATTRS_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { FaroTraceExporter } from '@grafana/faro-web-tracing';
+import { SpanExporter } from '@opentelemetry/sdk-trace-base';
 import { SessionIdProcessor } from './SessionIdProcessor';
+import { getFaro } from './FaroInit';
 import { detectResourcesSync } from '@opentelemetry/resources/build/src/detect-resources';
 
 const {
@@ -39,6 +42,9 @@ const FrontendTracer = async () => {
           scheduledDelayMillis: 500,
         }
       ),
+      ...(getFaro()
+        ? [new BatchSpanProcessor(new FaroTraceExporter({ api: getFaro()!.api }) as unknown as SpanExporter)]
+        : []),
     ],
   });
 
