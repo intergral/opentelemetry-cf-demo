@@ -293,6 +293,8 @@ services:
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
       - WEB_OTEL_SERVICE_NAME=frontend-web
       - OTEL_COLLECTOR_HOST
+      - FARO_COLLECTOR_URL
+      - FARO_APP_NAME
       - FLAGD_HOST
       - FLAGD_PORT
     depends_on:
