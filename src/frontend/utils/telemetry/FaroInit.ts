@@ -3,6 +3,9 @@
 
 import { initializeFaro, getWebInstrumentations, type Faro } from '@grafana/faro-web-sdk';
 
+const DEFAULT_FARO_URL = 'http://localhost:12347/collect';
+const DEFAULT_FARO_APP_NAME = 'otel-demo-frontend';
+
 let faro: Faro | undefined;
 
 export const getFaro = (): Faro | undefined => faro;
@@ -10,10 +13,13 @@ export const getFaro = (): Faro | undefined => faro;
 const initFaro = (): Faro | undefined => {
   if (typeof window === 'undefined' || faro) return faro;
 
+  const url = window.ENV?.FARO_COLLECTOR_URL || DEFAULT_FARO_URL;
+  const appName = window.ENV?.FARO_APP_NAME || DEFAULT_FARO_APP_NAME;
+
   faro = initializeFaro({
-    url: 'https://alloy.demo.streamhippo.io/collect',
+    url,
     app: {
-      name: 'otel-demo-frontend',
+      name: appName,
       environment: 'demo',
     },
     instrumentations: [
