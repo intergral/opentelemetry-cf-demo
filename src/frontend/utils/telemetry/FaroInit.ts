@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { initializeFaro, getWebInstrumentations, type Faro } from '@grafana/faro-web-sdk';
+import { TracingInstrumentation } from '@grafana/faro-web-tracing';
 
 const DEFAULT_FARO_URL = 'http://localhost:12347/collect';
 const DEFAULT_FARO_APP_NAME = 'otel-demo-frontend';
@@ -26,6 +27,7 @@ const initFaro = (): Faro | undefined => {
       ...getWebInstrumentations({
         captureConsole: true,
       }),
+      new TracingInstrumentation(),
     ],
   });
 
