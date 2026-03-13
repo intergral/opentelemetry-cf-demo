@@ -295,6 +295,7 @@ services:
       - OTEL_COLLECTOR_HOST
       - FARO_COLLECTOR_URL
       - FARO_APP_NAME
+      - FARO_SAMPLE_RATE
       - FLAGD_HOST
       - FLAGD_PORT
     depends_on:
