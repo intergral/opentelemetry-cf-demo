@@ -7,7 +7,7 @@ import {context, propagation} from "@opentelemetry/api";
 
 const {
   ENV_PLATFORM, WEB_OTEL_SERVICE_NAME, PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
-  OTEL_COLLECTOR_HOST, FARO_COLLECTOR_URL, FARO_APP_NAME,
+  OTEL_COLLECTOR_HOST, FARO_COLLECTOR_URL, FARO_APP_NAME, FARO_SAMPLE_RATE,
 } = process.env;
 
 export default class MyDocument extends Document<{ envString: string }> {
@@ -37,6 +37,7 @@ export default class MyDocument extends Document<{ envString: string }> {
           IS_SYNTHETIC_REQUEST: '${isSyntheticRequest}',
           FARO_COLLECTOR_URL: '${FARO_COLLECTOR_URL}',
           FARO_APP_NAME: '${FARO_APP_NAME}',
+          FARO_SAMPLE_RATE: '${FARO_SAMPLE_RATE}',
         };`;
       return {
         ...initialProps,

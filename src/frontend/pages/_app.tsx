@@ -24,6 +24,7 @@ declare global {
       IS_SYNTHETIC_REQUEST?: string;
       FARO_COLLECTOR_URL?: string;
       FARO_APP_NAME?: string;
+      FARO_SAMPLE_RATE?: string;
     };
   }
 }
