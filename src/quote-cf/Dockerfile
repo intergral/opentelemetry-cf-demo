@@ -36,6 +36,7 @@ RUN mkdir -p /opt/fusionreactor/conf
 COPY fusionreactor-conf/ /opt/fusionreactor/conf/
 
 # Download FusionReactor jar (architecture-independent)
+# 2026.1.3
 ADD https://download.fusionreactor.io/FR/Latest/fusionreactor.jar /opt/fusionreactor/fusionreactor.jar
 
 # Download architecture-specific FusionReactor native library
