@@ -11586,6 +11586,10 @@ spec:
               value: http://$(OTEL_COLLECTOR_NAME):4317
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: service.name=$(OTEL_SERVICE_NAME),service.namespace=opentelemetry-demo,service.version=2.0.2
+            - name: GOMEMLIMIT
+              value: "16MiB"
+            - name: OTEL_SEMCONV_STABILITY_OPT_IN
+              value: rpc/dup
           resources:
             limits:
               memory: 20Mi
@@ -12433,6 +12437,10 @@ spec:
               value: http://$(OTEL_COLLECTOR_NAME):4317
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: service.name=$(OTEL_SERVICE_NAME),service.namespace=opentelemetry-demo,service.version=2.0.2
+            - name: GOMEMLIMIT
+              value: "16MiB"
+            - name: OTEL_SEMCONV_STABILITY_OPT_IN
+              value: rpc/dup
           resources:
             limits:
               memory: 20Mi
