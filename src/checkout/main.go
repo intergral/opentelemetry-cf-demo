@@ -36,9 +36,9 @@ import (
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -113,7 +113,14 @@ func initMeterProvider() *sdkmetric.MeterProvider {
 	}
 
 	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+			exporter,
+			// go.schedule.duration and go.memory.gc.pause.duration are
+			// pre-computed by the runtime, so they arrive via producers rather
+			// than the metric API.
+			sdkmetric.WithProducer(runtime.NewProducer()),
+			sdkmetric.WithProducer(newGCPauseProducer()),
+		)),
 		sdkmetric.WithResource(initResource()),
 	)
 	otel.SetMeterProvider(mp)
@@ -129,6 +136,7 @@ type checkout struct {
 	paymentSvcAddr        string
 	kafkaBrokerSvcAddr    string
 	pb.UnimplementedCheckoutServiceServer
+	httpClient              *http.Client
 	KafkaProducerClient     sarama.AsyncProducer
 	shippingSvcClient       pb.ShippingServiceClient
 	productCatalogSvcClient pb.ProductCatalogServiceClient
@@ -160,6 +168,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := startRuntimeExtraMetrics(); err != nil {
+		log.Fatal(err)
+	}
 
 	openfeature.SetProvider(flagd.NewProvider())
 	openfeature.AddHooks(otelhooks.NewTracesHook())
@@ -167,6 +178,8 @@ func main() {
 	tracer = tp.Tracer("checkout")
 
 	svc := new(checkout)
+	// otelhttp.Post was removed in otelhttp v0.71.0; instrument at the transport instead.
+	svc.httpClient = &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
 
 	mustMapEnv(&svc.shippingSvcAddr, "SHIPPING_ADDR")
 	c := mustCreateClient(svc.shippingSvcAddr)
@@ -264,7 +277,7 @@ func (cs *checkout) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (
 
 	prep, err := cs.prepareOrderItemsAndShippingQuoteFromCart(ctx, req.UserId, req.UserCurrency, req.Address)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, err.Error())
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	span.AddEvent("prepared")
 
@@ -469,7 +482,13 @@ func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, ord
 		return fmt.Errorf("failed to marshal order to JSON: %+v", err)
 	}
 
-	resp, err := otelhttp.Post(ctx, cs.emailSvcAddr+"/send_order_confirmation", "application/json", bytes.NewBuffer(emailPayload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cs.emailSvcAddr+"/send_order_confirmation", bytes.NewBuffer(emailPayload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %+v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := cs.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed POST to email service: %+v", err)
 	}

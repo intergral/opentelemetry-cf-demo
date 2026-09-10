@@ -39,9 +39,9 @@ import (
 	"github.com/open-feature/go-sdk/openfeature"
 	pb "github.com/opentelemetry/opentelemetry-demo/src/product-catalog/genproto/oteldemo"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
@@ -105,7 +105,14 @@ func initMeterProvider() *sdkmetric.MeterProvider {
 	}
 
 	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+			exporter,
+			// go.schedule.duration and go.memory.gc.pause.duration are
+			// pre-computed by the runtime, so they arrive via producers rather
+			// than the metric API.
+			sdkmetric.WithProducer(runtime.NewProducer()),
+			sdkmetric.WithProducer(newGCPauseProducer()),
+		)),
 		sdkmetric.WithResource(initResource()),
 	)
 	otel.SetMeterProvider(mp)
@@ -136,6 +143,9 @@ func main() {
 
 	err = runtime.Start(runtime.WithMinimumReadMemStatsInterval(time.Second))
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := startRuntimeExtraMetrics(); err != nil {
 		log.Fatal(err)
 	}
 
@@ -294,7 +304,7 @@ func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductReque
 		msg := fmt.Sprintf("Error: Product Catalog Fail Feature Flag Enabled")
 		span.SetStatus(otelcodes.Error, msg)
 		span.AddEvent(msg)
-		return nil, status.Errorf(codes.Internal, msg)
+		return nil, status.Error(codes.Internal, msg)
 	}
 
 	var found *pb.Product
@@ -309,7 +319,7 @@ func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductReque
 		msg := fmt.Sprintf("Product Not Found: %s", req.Id)
 		span.SetStatus(otelcodes.Error, msg)
 		span.AddEvent(msg)
-		return nil, status.Errorf(codes.NotFound, msg)
+		return nil, status.Error(codes.NotFound, msg)
 	}
 
 	span.AddEvent("Product Found")
