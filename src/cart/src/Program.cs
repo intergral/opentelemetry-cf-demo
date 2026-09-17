@@ -72,7 +72,9 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(meterBuilder => meterBuilder
         .AddMeter("OpenTelemetry.Demo.Cart")
         .AddProcessInstrumentation()
-        .AddRuntimeInstrumentation()
+        // .NET 9's built-in runtime meter, emitting the semconv dotnet.* names.
+        // Replaces .AddRuntimeInstrumentation(), which emits process.runtime.dotnet.*.
+        .AddMeter("System.Runtime")
         .AddAspNetCoreInstrumentation()
         .SetExemplarFilter(ExemplarFilterType.TraceBased)
         .AddOtlpExporter());

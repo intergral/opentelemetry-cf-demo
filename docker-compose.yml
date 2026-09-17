@@ -40,6 +40,10 @@ services:
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
       - OTEL_RESOURCE_ATTRIBUTES
       - OTEL_SERVICE_NAME=accounting
+      # Swap the auto-instrumentation's process.runtime.dotnet.* metrics for
+      # .NET 9's built-in System.Runtime meter, which emits the semconv dotnet.* names.
+      - OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES=System.Runtime
+      - OTEL_DOTNET_AUTO_METRICS_NETRUNTIME_INSTRUMENTATION_ENABLED=false
     depends_on:
       otel-collector:
         condition: service_started
