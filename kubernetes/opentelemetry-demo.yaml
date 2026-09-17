@@ -11594,6 +11594,8 @@ spec:
               value: "16MiB"
             - name: OTEL_SEMCONV_STABILITY_OPT_IN
               value: rpc/dup
+            - name: OTEL_GO_X_DEPRECATED_RUNTIME_METRICS
+              value: "true"
           resources:
             limits:
               memory: 20Mi
@@ -12445,6 +12447,8 @@ spec:
               value: "16MiB"
             - name: OTEL_SEMCONV_STABILITY_OPT_IN
               value: rpc/dup
+            - name: OTEL_GO_X_DEPRECATED_RUNTIME_METRICS
+              value: "true"
           resources:
             limits:
               memory: 20Mi
