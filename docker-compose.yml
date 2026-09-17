@@ -40,6 +40,10 @@ services:
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
       - OTEL_RESOURCE_ATTRIBUTES
       - OTEL_SERVICE_NAME=accounting
+      # Swap the auto-instrumentation's process.runtime.dotnet.* metrics for
+      # .NET 9's built-in System.Runtime meter, which emits the semconv dotnet.* names.
+      - OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES=System.Runtime
+      - OTEL_DOTNET_AUTO_METRICS_NETRUNTIME_INSTRUMENTATION_ENABLED=false
     depends_on:
       otel-collector:
         condition: service_started
@@ -146,6 +150,7 @@ services:
       - KAFKA_ADDR
       - GOMEMLIMIT=16MiB
       - OTEL_SEMCONV_STABILITY_OPT_IN=rpc/dup
+      - OTEL_GO_X_DEPRECATED_RUNTIME_METRICS=true
       - OTEL_EXPORTER_OTLP_ENDPOINT
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
       - OTEL_RESOURCE_ATTRIBUTES
@@ -500,6 +505,7 @@ services:
       - FLAGD_PORT
       - GOMEMLIMIT=16MiB
       - OTEL_SEMCONV_STABILITY_OPT_IN=rpc/dup
+      - OTEL_GO_X_DEPRECATED_RUNTIME_METRICS=true
       - OTEL_EXPORTER_OTLP_ENDPOINT
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
       - OTEL_RESOURCE_ATTRIBUTES

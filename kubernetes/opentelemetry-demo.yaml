@@ -11359,6 +11359,10 @@ spec:
               value: http://$(OTEL_COLLECTOR_NAME):4318
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: service.name=$(OTEL_SERVICE_NAME),service.namespace=opentelemetry-demo,service.version=2.0.2
+            - name: OTEL_DOTNET_AUTO_METRICS_ADDITIONAL_SOURCES
+              value: "System.Runtime"
+            - name: OTEL_DOTNET_AUTO_METRICS_NETRUNTIME_INSTRUMENTATION_ENABLED
+              value: "false"
           resources:
             limits:
               memory: 120Mi
@@ -11590,6 +11594,8 @@ spec:
               value: "16MiB"
             - name: OTEL_SEMCONV_STABILITY_OPT_IN
               value: rpc/dup
+            - name: OTEL_GO_X_DEPRECATED_RUNTIME_METRICS
+              value: "true"
           resources:
             limits:
               memory: 20Mi
@@ -12441,6 +12447,8 @@ spec:
               value: "16MiB"
             - name: OTEL_SEMCONV_STABILITY_OPT_IN
               value: rpc/dup
+            - name: OTEL_GO_X_DEPRECATED_RUNTIME_METRICS
+              value: "true"
           resources:
             limits:
               memory: 20Mi
