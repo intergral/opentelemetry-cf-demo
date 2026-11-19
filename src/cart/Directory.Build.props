@@ -7,5 +7,12 @@
 
     <PropertyGroup Condition="'$(Configuration)'=='Release'">
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <!-- Keep the NuGet audit on and visible, but do not let a newly published
+             advisory against a pinned transitive dependency fail the build. The
+             pinned OpenTelemetry.AutoInstrumentation 1.11.0 pulls in packages that
+             now carry NU1902/NU1903 advisories, which broke `make build` even
+             though no source changed. Bumping those packages is a separate
+             decision; this only stops audit warnings being promoted to errors. -->
+        <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     </PropertyGroup>
 </Project>

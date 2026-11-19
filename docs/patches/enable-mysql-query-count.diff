@@ -1,0 +1,18 @@
+--- a/src/otel-collector/otelcol-config.yml
++++ b/src/otel-collector/otelcol-config.yml
+@@ -39,6 +39,15 @@
+     # database" unless the monitoring user is granted rights on it. Omitting it
+     # collects server-wide metrics, which is what we want here.
+     collection_interval: 10s
++    metrics:
++      # Opt-in. Needed by the "Database is handling far more queries
++      # than usual" rule in alerts/scenario-rules.yaml: it is the only
++      # default-or-opt-in metric that catches BOTH the payment N+1
++      # deployment and the stock-reconciler batch job. Rows-read is
++      # enabled by default but is nearly blind to the N+1, which adds
++      # ~5 rows/sec against a ~340/sec baseline.
++      mysql.query.count:
++        enabled: true
+   # Host metrics
+   hostmetrics:
+     root_path: /hostfs

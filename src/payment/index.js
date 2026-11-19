@@ -1,7 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 const Bugsnag = require('@bugsnag/js')
-Bugsnag.start({ apiKey: process.env.BUGSNAG_PAYMENT_API_KEY || '' })
+// Bugsnag throws "No Bugsnag API Key set" on an empty key, which crash-loops the
+// service. Only start it when a key is actually configured, matching how
+// src/quote-cf/www/Application.cfc already guards its own initialisation.
+const bugsnagApiKey = process.env.BUGSNAG_PAYMENT_API_KEY || ''
+if (bugsnagApiKey) {
+  Bugsnag.start({ apiKey: bugsnagApiKey })
+}
 
 const grpc = require('@grpc/grpc-js')
 const protoLoader = require('@grpc/proto-loader')
@@ -26,7 +32,9 @@ async function chargeServiceHandler(call, callback) {
 
   } catch (err) {
     logger.warn({ err })
-    Bugsnag.notify(err)
+    if (bugsnagApiKey) {
+      Bugsnag.notify(err)
+    }
 
     span?.recordException(err)
     span?.setStatus({ code: opentelemetry.SpanStatusCode.ERROR })

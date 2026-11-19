@@ -257,9 +257,18 @@ class CFStorefrontUser(HttpUser):
                        name="CF Update Quote",
                        timeout=30)
     
+    # Re-enabled 2026-11-12 after removeoldquotes.cfm was made safe: both its
+    # queries now cap each cross-join arm with a derived-table LIMIT, so the
+    # cost is fixed rather than growing with the table, and both carry a
+    # MySQL-side MAX_EXECUTION_TIME so a query can never outlive the request.
+    # Measured ~3.4s at 3,331 rows and ~3.4s at 53,280 - unchanged at 16x.
+    #
+    # Weight 1 of 6 in this class, and the page itself only takes the slow path
+    # 5% of the time, so the expensive query runs roughly once every 20 minutes.
+    # Raise the weight here, or the 5% gate in the page, to see it more often.
     @task(1)
     def remove_old_quotes(self):
-        """Remove old quotes endpoint - this is the expensive slow query endpoint"""
-        self.client.get("/removeoldquotes.cfm", 
+        """Remove old quotes endpoint - the bounded slow-query demo"""
+        self.client.get("/removeoldquotes.cfm",
                        name="CF Remove Old Quotes",
                        timeout=30)

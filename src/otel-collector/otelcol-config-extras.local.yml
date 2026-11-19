@@ -1,0 +1,31 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# LOCAL ONLY — do not deploy this file to the FusionReactor demo deployment.
+#
+# Selected by pointing OTEL_COLLECTOR_CONFIG_EXTRAS at this file from
+# .env.override. Anything that does not set that variable keeps using the
+# upstream otelcol-config-extras.yml, so docker-compose.yml, the main collector
+# config and the FR demo deployment are all unchanged.
+#
+# Why: the hostmetrics receiver has root_path: /hostfs, and on macOS the only
+# way to populate /hostfs is to bind-mount the host root, which makes Docker
+# Desktop raise privacy prompts for ~/Documents, ~/Desktop and ~/Downloads.
+# Pointing the mount at an empty stub silences the prompts but breaks every
+# scraper, not just the filesystem one — they all read through root_path, so
+# the collector logs "open /hostfs/proc/...: no such file or directory" and
+# "invalid total memory: 0" on every scrape interval.
+#
+# Host metrics are not worth chasing here anyway: on Docker Desktop the "host"
+# is the Linux VM, not the Mac, so the numbers describe a VM nobody is watching.
+# Per-container metrics still come from docker_stats, which is what OpsPilot
+# actually uses for container health.
+#
+# Collector config merging REPLACES lists rather than appending, so restating
+# the metrics receivers here drops hostmetrics from the pipeline. The receiver
+# stays defined in otelcol-config.yml; it is simply no longer referenced.
+
+service:
+  pipelines:
+    metrics:
+      receivers: [docker_stats, httpcheck/frontend-proxy, mysql, otlp, redis, spanmetrics]

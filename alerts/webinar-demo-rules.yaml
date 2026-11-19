@@ -1,0 +1,103 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Alert rules for the OpsPilot Coworker webinar demo.
+#
+# OpsPilot has no documented rule-import endpoint, and the ingest API key has no
+# access to any rules API, so these are entered through the UI. This file is the
+# source of truth for the values; alerts/README.md has the field-by-field steps.
+# The Prometheus rule-group shape is used because OpsPilot's own "Imported
+# Rules" are Prometheus-shaped and it evaluates PromQL.
+#
+# ---------------------------------------------------------------------------
+# THRESHOLDS ARE DERIVED FROM MEASURED BASELINE, NOT GUESSED
+#
+# Window: 2026-11-10 11:25Z - 14:43Z (3h18m), the first clean period after the
+# quote OOM, the DEEP DNS errors and the runaway removeoldquotes query were all
+# fixed. 115 completed orders. This is NOT the 24-hour baseline Step 3 asks for;
+# see "Known limits" in the README.
+#
+#                        observed baseline                 threshold   headroom
+#   checkout PlaceOrder  p50 430  p95 567  max 614 ms   ->  1500 ms     2.4x max
+#   payment  Charge      p50   6  p95  10  max  15 ms   ->   500 ms      33x max
+#   payment  DB INSERT   avg 3.8           max  13 ms   ->   500 ms      37x max
+#
+# Each threshold also has to FIRE on ./demo.sh slow-db (800 ms): that injection
+# added ~800 ms per DB round trip, measured at 51 ms -> 4261 ms on the proxied
+# connection. Expected under injection: payment DB >= 800 ms, payment charge
+# ~1.6-3.2 s, checkout ~2.2 s+. Every threshold sits between the baseline max
+# and the injected floor, which is the property that matters.
+#
+# Metric: traces_span_metrics_duration_bucket (confirmed in EmmettDev). The unit
+# is NOT in the name - the spanmetrics connector records milliseconds but names
+# the metric from its namespace plus "duration", so le values are ms.
+#
+# Connector default buckets (no histogram.explicit.buckets configured):
+#   2, 4, 6, 8, 10, 50, 100, 200, 400, 800, 1000, 1400, 2000, 5000, 10000, 15000 ms
+# Both thresholds fall strictly between two boundaries, so histogram_quantile
+# interpolates rather than saturating: 500 sits between 400 and 800, 1500
+# between 1400 and 2000.
+# ---------------------------------------------------------------------------
+
+groups:
+  - name: webinar-demo-checkout-journey
+    interval: 1m
+    rules:
+
+      - alert: Checkout is slow for customers
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(traces_span_metrics_duration_bucket{service_name="checkout"}[5m])
+            )
+          ) > 1500
+        for: 2m
+        labels:
+          journey: checkout
+          environment: webinar-demo
+          severity: warning
+        annotations:
+          summary: Customers are waiting more than 1.5 seconds to place an order
+          description: >-
+            95% of checkout requests normally complete in under 600 ms. They are
+            now taking more than 1.5 seconds, so customers placing an order are
+            noticeably waiting. This is the symptom a customer would report.
+
+      - alert: Payment service is slow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(traces_span_metrics_duration_bucket{service_name="payment"}[5m])
+            )
+          ) > 500
+        for: 2m
+        labels:
+          journey: checkout
+          environment: webinar-demo
+          severity: warning
+        annotations:
+          summary: The payment service is taking more than half a second to take a payment
+          description: >-
+            Taking a payment normally finishes in about 10 ms. It is now taking
+            more than 500 ms, which means checkout is waiting on payment rather
+            than on anything else in the order.
+
+      - alert: Payment database queries are slow
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(traces_span_metrics_duration_bucket{service_name="payment", span_name="INSERT"}[5m])
+            )
+          ) > 500
+        for: 2m
+        labels:
+          journey: checkout
+          environment: webinar-demo
+          severity: warning
+        annotations:
+          summary: The payment service's database writes are taking more than half a second
+          description: >-
+            Writing a payment transaction to MySQL normally takes about 4 ms and
+            has never been seen above 14 ms. It is now taking more than 500 ms.
+            This is the closest rule to the cause: the database call itself is
+            slow, not the service around it.

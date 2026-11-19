@@ -17,10 +17,37 @@ receivers:
       - endpoint: http://frontend-proxy:${env:ENVOY_PORT}
   docker_stats:
     endpoint: unix:///var/run/docker.sock
+    # The receiver defaults to Docker API 1.25, which Docker Engine 29 refuses
+    # (its MinAPIVersion is 1.40), aborting collector startup entirely. 1.40 is
+    # the daemon's minimum and is supported all the way back to Docker 19.03,
+    # so it is the portable choice.
+    api_version: "1.40"
   redis:
     endpoint: "valkey-cart:6379"
     username: "valkey"
     collection_interval: 10s
+  # Database-side metrics, so the webinar's slowdown can be corroborated from
+  # MySQL itself rather than only from payment's client spans. Connects straight
+  # to mysql, NOT through Toxiproxy, so the proxy's latency does not distort the
+  # database's own numbers. Read-only user, credentials from .env.override.
+  mysql:
+    endpoint: mysql:3306
+    username: ${env:MYSQL_MONITOR_USER}
+    password: ${env:MYSQL_MONITOR_PASSWORD}
+    # No `database:` on purpose. Setting one makes the receiver select it as the
+    # default schema on connect, which fails with "Error 1044 Access denied to
+    # database" unless the monitoring user is granted rights on it. Omitting it
+    # collects server-wide metrics, which is what we want here.
+    collection_interval: 10s
+    metrics:
+      # Opt-in. Needed by the "Database is handling far more queries
+      # than usual" rule in alerts/scenario-rules.yaml: it is the only
+      # default-or-opt-in metric that catches BOTH the payment N+1
+      # deployment and the stock-reconciler batch job. Rows-read is
+      # enabled by default but is nearly blind to the N+1, which adds
+      # ~5 rows/sec against a ~340/sec baseline.
+      mysql.query.count:
+        enabled: true
   # Host metrics
   hostmetrics:
     root_path: /hostfs
@@ -82,18 +109,14 @@ receivers:
 # TODO make secure
 exporters:
   debug:
+  # Single OTLP/HTTP exporter for all three signals, per OpsPilot's collector
+  # docs. The exporter appends /v1/traces, /v1/metrics and /v1/logs itself, so
+  # OPSPILOT_ENDPOINT is the bare scheme and host. Verified against both
+  # api.fusionreactor.io and data.production.streamhippo.io.
   otlphttp:
-    endpoint: https://data.production.streamhippo.io
+    endpoint: ${env:OPSPILOT_ENDPOINT}
     headers:
-      authorization: Basic
-  otlphttp/prometheus:
-    endpoint: "https://data.production.streamhippo.io/otlp"
-    headers:
-      authorization: Basic
-  loki:
-    endpoint: "https://data.production.streamhippo.io/loki/api/v1/push"
-    headers:
-      authorization: Basic
+      authorization: ${env:OPSPILOT_AUTH}
 
 processors:
   batch:
@@ -112,6 +135,26 @@ processors:
 
 connectors:
   spanmetrics:
+    # Identify a resource by its STABLE attributes only.
+    #
+    # Without this the connector keys on the whole resource, and payment's
+    # resource carries container.id, host.name, process.pid and
+    # service.instance.id - every one of which changes on redeploy. A redeploy
+    # therefore creates a SECOND resource bucket for the same logical service,
+    # and because metrics_expiration defaults to 0 (never expire) the dead one
+    # is kept and exported forever alongside the live one. Both carry the same
+    # promoted labels, so the backend sees duplicate samples and rejects them -
+    # which silently killed payment's span metrics at 16:40 on 2026-11-11, five
+    # minutes after a 16:35 redeploy, while its traces kept flowing normally.
+    resource_metrics_key_attributes:
+      - service.name
+      - service.namespace
+      - service.version
+    # Belt and braces: a genuinely dead resource - for example version 2.0.3
+    # after ./demo.sh deploy-bad then rollback - stops being exported rather
+    # than lingering forever. Well above the ~17s gap between orders, so live
+    # series are never dropped mid-flight.
+    metrics_expiration: 5m
 
 service:
   pipelines:
@@ -120,13 +163,13 @@ service:
       processors: [memory_limiter, transform, batch]
       exporters: [otlphttp, debug, spanmetrics]
     metrics:
-      receivers: [hostmetrics, docker_stats, httpcheck/frontend-proxy, otlp, redis, spanmetrics]
+      receivers: [hostmetrics, docker_stats, httpcheck/frontend-proxy, mysql, otlp, redis, spanmetrics]
       processors: [memory_limiter, batch]
-      exporters: [otlphttp/prometheus, debug]
+      exporters: [otlphttp, debug]
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [loki, debug]
+      exporters: [otlphttp, debug]
   telemetry:
     metrics:
       level: detailed

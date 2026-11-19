@@ -11,15 +11,42 @@ MISSPELL_BINARY=bin/misspell
 MISSPELL = $(TOOLS_DIR)/$(MISSPELL_BINARY)
 
 DOCKER_COMPOSE_CMD ?= docker compose
-DOCKER_COMPOSE_ENV=--env-file .env --env-file .env.override
+DOCKER_COMPOSE_ENV=--env-file .env
 DOCKER_COMPOSE_BUILD_ARGS=
+DOCKER_COMPOSE_FILES=
 
-# Java Workaround for macOS 15.2+ and M4 chips (see https://bugs.openjdk.org/browse/JDK-8345296)
+# Java Workaround for macOS 15.2+ and Apple Silicon (see https://bugs.openjdk.org/browse/JDK-8345296)
 ifeq ($(shell uname -m),arm64)
 	ifeq ($(shell uname -s),Darwin)
 		DOCKER_COMPOSE_ENV+= --env-file .env.arm64
 		DOCKER_COMPOSE_BUILD_ARGS+= --build-arg=_JAVA_OPTIONS=-XX:UseSVE=0
 	endif
+endif
+
+# .env.override holds the local OpsPilot destination and is gitignored, so it is
+# optional: compose errors out on a missing --env-file. It is listed last so its
+# values win. Copy .env.override.example to get started.
+ifneq (,$(wildcard .env.override))
+	DOCKER_COMPOSE_ENV+= --env-file .env.override
+endif
+
+# LOCAL ONLY. Building all 18 images at once makes each target open its own
+# cache_from registry connection, which Docker Desktop rejects with
+# "only one connection allowed"; that then cascades into DeadlineExceeded and
+# Canceled on most targets. Serialising the build avoids it. On a machine that
+# does not hit the limit, `make build BUILD_PARALLEL=0` restores the default
+# behaviour, or set it to any other number.
+BUILD_PARALLEL ?= 3
+ifneq ($(BUILD_PARALLEL),0)
+	DOCKER_BUILD_ENV=COMPOSE_BAKE=false COMPOSE_PARALLEL_LIMIT=$(BUILD_PARALLEL)
+endif
+
+# LOCAL ONLY. Park jaeger, opensearch, prometheus and grafana behind an
+# off-by-default profile; see the header of docker-compose.trim.yml. Use
+# `make start TRIM=0` for the full upstream stack.
+TRIM ?= 1
+ifeq ($(TRIM),1)
+	DOCKER_COMPOSE_FILES= -f docker-compose.yml -f docker-compose.trim.yml
 endif
 
 # see https://github.com/open-telemetry/build-tools/releases for semconvgen updates
@@ -94,11 +121,11 @@ install-tools: $(MISSPELL)
 
 .PHONY: build
 build:
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS)
+	$(DOCKER_BUILD_ENV) $(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS)
 
 .PHONY: build-and-push
 build-and-push:
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS) --push
+	$(DOCKER_BUILD_ENV) $(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS) --push
 
 # Create multiplatform builder for buildx
 .PHONY: create-multiplatform-builder
@@ -183,14 +210,36 @@ check-clean-work-tree:
 
 .PHONY: start
 start:
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) up --force-recreate --remove-orphans --detach
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) up --force-recreate --remove-orphans --detach
+#	Re-establish the permanent 4ms payment -> MySQL link latency. Toxics live
+#	only in the toxiproxy container's memory, so --force-recreate (and any
+#	`make stop`) wipes them; src/toxiproxy/toxiproxy.json seeds the proxy but
+#	cannot express toxics. payment depends_on toxiproxy with condition
+#	service_healthy, so by the time `up` returns the control API is ready and
+#	there is no race here. Warn rather than fail: the stack is already up, and
+#	aborting the target would be worse than a visible warning.
+	@./demo.sh baseline-toxic || { \
+	  echo ""; \
+	  echo "WARNING: could not apply the 4ms baseline latency toxic."; \
+	  echo "         Run './demo.sh baseline-toxic' once toxiproxy is healthy."; \
+	}
 	@echo ""
 	@echo "OpenTelemetry Demo is running."
 	@echo "Go to http://localhost:8080 for the demo UI."
-	@echo "Go to http://localhost:8080/jaeger/ui for the Jaeger UI."
-	@echo "Go to http://localhost:8080/grafana/ for the Grafana UI."
 	@echo "Go to http://localhost:8080/loadgen/ for the Load Generator UI."
 	@echo "Go to http://localhost:8080/feature/ to change feature flags."
+	@if [ "$(TRIM)" = "1" ]; then \
+	  echo ""; \
+	  echo "Trimmed run: jaeger, opensearch, prometheus and grafana were not started,"; \
+	  echo "so /jaeger/ui and /grafana/ return 503. Use 'make start TRIM=0' for all of them."; \
+	else \
+	  echo "Go to http://localhost:8080/jaeger/ui for the Jaeger UI."; \
+	  echo "Go to http://localhost:8080/grafana/ for the Grafana UI."; \
+	fi
+
+# Build with the right build args, then start. This is the local entry point.
+.PHONY: start-build
+start-build: build start
 
 .PHONY: start-minimal
 start-minimal:
@@ -212,6 +261,10 @@ stop:
 
 # Use to restart a single service component
 # Example: make restart service=frontend
+#
+# DOCKER_COMPOSE_FILES must be included: without it the trim overlay is skipped,
+# compose resolves the untrimmed depends_on chain, and recreating any one
+# service silently starts jaeger and opensearch.
 .PHONY: restart
 restart:
 # work with `service` or `SERVICE` as input
@@ -220,10 +273,10 @@ ifdef SERVICE
 endif
 
 ifdef service
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) stop $(service)
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) rm --force $(service)
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) create $(service)
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) start $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) stop $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) rm --force $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) create $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) start $(service)
 else
 	@echo "Please provide a service name using `service=[service name]` or `SERVICE=[service name]`"
 endif
@@ -238,11 +291,11 @@ ifdef SERVICE
 endif
 
 ifdef service
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS) $(service)
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) stop $(service)
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) rm --force $(service)
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) create $(service)
-	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) start $(service)
+	$(DOCKER_BUILD_ENV) $(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) build $(DOCKER_COMPOSE_BUILD_ARGS) $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) stop $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) rm --force $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) create $(service)
+	$(DOCKER_COMPOSE_CMD) $(DOCKER_COMPOSE_ENV) $(DOCKER_COMPOSE_FILES) start $(service)
 else
 	@echo "Please provide a service name using `service=[service name]` or `SERVICE=[service name]`"
 endif

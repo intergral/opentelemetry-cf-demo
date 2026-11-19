@@ -103,7 +103,13 @@ try {
     totalAmount = subtotal + taxAmount;
     
     // Create quote record in database with complex join query to verify data integrity
-    quoteNumber = "Q-" & year(now()) & "-" & (randRange(1000, 9999));
+    // randRange(1000, 9999) gave only 9,000 values against a UNIQUE constraint
+    // on quotes.quote_number. Once the table passed ~1,000 rows that was a ~12%
+    // duplicate-key rate per insert, and a duplicate makes this page return a
+    // JSON error instead of a price - which shipping then fails to parse
+    // ("invalid float literal"), breaking ~9.5% of checkouts. 900,000 values
+    // keeps collisions near 0.1% at the volumes this demo runs.
+    quoteNumber = "Q-" & year(now()) & "-" & (randRange(100000, 999999));
     
     quoteInsert = queryExecute("
         INSERT INTO quotes (customer_id, quote_number, quote_date, expiration_date, 

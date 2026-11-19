@@ -1,0 +1,144 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# PROPOSED - not loaded into any org yet. These accompany the two scenarios in
+# docs/SCENARIOS.md.
+#
+# Unlike webinar-demo-rules.yaml, the thresholds here come from a measured
+# IDLE baseline plus arithmetic about what each scenario should add - the
+# scenarios themselves have not been run yet. Tune them in rehearsal.
+#
+# ---------------------------------------------------------------------------
+# MEASURED BASELINE, 45s sample of live traffic at 20 users, 2026-11-11:
+#   Questions (queries)      1.6 /sec
+#   Innodb_rows_read       340   /sec
+#   Handler_read_rnd_next  200   /sec
+#   Handler_read_key        18.6 /sec
+#
+# WHAT EACH SCENARIO ADDS (arithmetic, at ~4.4 orders/min):
+#   payment N+1   ~63 extra queries per charge = +4.6 queries/sec,
+#                 but only ~+5 rows/sec - every query is a single-row PK hit.
+#   batch job     1500 batches x 4 queries = 6000 queries and ~345,000 rows
+#                 per run, over ~60s. Averaged across a 5-minute rate window:
+#                 +20 queries/sec and +1,150 rows/sec.
+#
+# THE IMPORTANT CONSEQUENCE:
+#   A rule on ROWS READ catches the batch job and is almost blind to the
+#   payment N+1 (+5 rows/sec against a 340/sec baseline). A rule on QUERY
+#   COUNT catches both. If only one rule is wanted, make it query count.
+# ---------------------------------------------------------------------------
+
+groups:
+  - name: webinar-demo-database-load
+    interval: 1m
+    rules:
+
+      # ---------------------------------------------------------------------
+      # PREFERRED. Catches BOTH scenarios.
+      #
+      # REQUIRES A COLLECTOR CHANGE: mysql.query.count is opt-in in the mysql
+      # receiver. Add to src/otel-collector/otelcol-config.yml:
+      #
+      #   mysql:
+      #     metrics:
+      #       mysql.query.count:
+      #         enabled: true
+      #
+      # Baseline 1.6 q/s; N+1 takes it to ~6; the batch to ~22 over a 5m
+      # window. 10 sits clear of baseline and below both scenarios.
+      # ---------------------------------------------------------------------
+      - alert: Database is handling far more queries than usual
+        expr: |
+          sum(rate(mysql_query_count_total[5m])) > 10
+        for: 5m
+        labels:
+          journey: checkout
+          environment: webinar-demo
+          severity: warning
+        annotations:
+          summary: MySQL is running many times its normal number of queries per second
+          description: >-
+            The database is being asked to do far more work than normal. Either
+            something is querying much more than it needs to, or a scheduled job
+            is running. Check what was deployed recently and whether a batch job
+            is active.
+
+      # ---------------------------------------------------------------------
+      # FALLBACK. Needs no collector change - mysql.row_operations is enabled
+      # by default - but catches ONLY the batch job.
+      #
+      # Baseline 340 rows/sec; the batch adds ~1,150/sec over a 5m window.
+      # ---------------------------------------------------------------------
+      - alert: Database is reading far more rows than usual
+        expr: |
+          sum(rate(mysql_row_operations_total{operation="read"}[5m])) > 1000
+        for: 5m
+        labels:
+          journey: checkout
+          environment: webinar-demo
+          severity: warning
+        annotations:
+          summary: MySQL is reading many times its normal number of rows per second
+          description: >-
+            The database is reading far more rows per second than normal, which
+            usually means a batch job or a query scanning more than it should.
+
+      # ---------------------------------------------------------------------
+      # Narrow rule for the payment N+1 specifically, from span metrics rather
+      # than from MySQL. Normal is 1 INSERT per charge; the bad deployment
+      # makes it 46-81, so the ratio is the signal.
+      # ---------------------------------------------------------------------
+      - alert: Payment is making far more database calls per charge
+        expr: |
+          sum(rate(traces_span_metrics_calls_total{service_name="payment", span_name=~"SELECT|INSERT"}[5m]))
+          /
+          clamp_min(
+            sum(rate(traces_span_metrics_calls_total{service_name="payment", span_name=~".*Charge"}[5m])),
+            0.001
+          ) > 5
+        for: 5m
+        labels:
+          journey: checkout
+          environment: webinar-demo
+          severity: warning
+        annotations:
+          summary: Payment runs many database queries for every charge it processes
+          description: >-
+            Payment normally makes one database call per charge. It is now
+            making several times that, which is the signature of a query running
+            once per item instead of once per request. Check what was recently
+            deployed to payment. Measured under ./demo.sh deploy-bad: 86-156
+            calls per charge against 1 normally.
+
+  - name: webinar-demo-checkout-errors
+    interval: 1m
+    rules:
+
+      # ---------------------------------------------------------------------
+      # Real failures, not slow successes. Coworker needs these to raise a
+      # Situation - a slow-but-successful checkout is not enough.
+      #
+      # Measured under ./demo.sh fail-db (paymentDatabaseError at 30%):
+      #   checkout failure rate 23.1% (6 of 26 orders lost)
+      #   31 error spans across 9 service/operation pairs, from payment's gRPC
+      #   handler out through checkout, frontend, frontend-proxy and the load
+      #   generator.
+      # Baseline is 0%, so 5% is comfortably clear of noise and far below 23%.
+      # ---------------------------------------------------------------------
+      - alert: Checkout is failing for customers
+        expr: |
+          sum(rate(traces_span_metrics_calls_total{service_name="checkout", status_code="STATUS_CODE_ERROR"}[5m]))
+          /
+          clamp_min(sum(rate(traces_span_metrics_calls_total{service_name="checkout"}[5m])), 0.001)
+          > 0.05
+        for: 2m
+        labels:
+          journey: checkout
+          environment: webinar-demo
+          severity: critical
+        annotations:
+          summary: More than 5% of checkouts are failing outright
+          description: >-
+            Customers are getting errors when they try to place an order - these
+            orders are lost, not merely slow. Check payment and its database
+            first: that is where checkout failures normally originate.

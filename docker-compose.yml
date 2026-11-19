@@ -61,7 +61,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 300M
+          # Raised from 300M. The FR agent's OTel exporters pushed this close to
+          # the old ceiling (fraud-detection sat pinned at 99.5%), and a Docker
+          # OOM-kill of the container is silent and immediate.
+          memory: 512M
     restart: unless-stopped
     ports:
       - "${AD_PORT}"
@@ -70,12 +73,25 @@ services:
       - FLAGD_HOST
       - FLAGD_PORT
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://${OTEL_COLLECTOR_HOST}:${OTEL_COLLECTOR_PORT_HTTP}
+      # The FR agent's OTel exporters default to the grpc protocol, whose port is
+      # 4317, while the endpoint above is the collector's HTTP port 4318. That
+      # mismatch made every export fail with ConnectionShutdownException.
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
       - OTEL_RESOURCE_ATTRIBUTES
       - OTEL_LOGS_EXPORTER=otlp
       - OTEL_SERVICE_NAME=ad
       # Workaround on OSX for https://bugs.openjdk.org/browse/JDK-8345296
       - _JAVA_OPTIONS
+      # Overrides the ENV baked into src/ad/Dockerfile so FusionReactor's licence
+      # and cloud settings can come from .env.override. JAVA_TOOL_OPTIONS is read
+      # by the JVM directly and is never shell-expanded, so it has to be
+      # assembled here. FR takes the licence and cloud config as JVM system
+      # properties, not as agent arguments, which is how report-cf did it. Each
+      # -D group appears only when its variable is set; with FR_* unset this is
+      # byte-identical to the Dockerfile value. Instance name must stay
+      # otlp-ad-fr.
+      - JAVA_TOOL_OPTIONS=-javaagent:/usr/src/app/fusionreactor.jar=name=otlp-ad-fr,address=8088${FR_AGENT_OPTS:-} -agentpath:/usr/src/app/libfrjvmti.so${FR_LICENSE:+ -Dfrlicense=${FR_LICENSE} -Dfr.license.endpoint=${FR_LICENSE_ENDPOINT:-https://api.fusionreactor.io/licensing-api/} -Dfr.cloud.endpoint=${FR_CLOUD_ENDPOINT:-https://api.fusionreactor.io}}${FR_CLOUD_GROUP:+ -Dfr.cloud.group=${FR_CLOUD_GROUP}} -XX:MaxRAMPercentage=50
     depends_on:
       otel-collector:
         condition: service_started
@@ -240,18 +256,24 @@ services:
     deploy:
       resources:
         limits:
-          memory: 300M
+          # See the note on the ad service.
+          memory: 512M
     restart: unless-stopped
     environment:
       - FLAGD_HOST
       - FLAGD_PORT
       - KAFKA_ADDR
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://${OTEL_COLLECTOR_HOST}:${OTEL_COLLECTOR_PORT_HTTP}
+      # See the note on the ad service.
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
       - OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES=true
       - OTEL_INSTRUMENTATION_MESSAGING_EXPERIMENTAL_RECEIVE_TELEMETRY_ENABLED=true
       - OTEL_RESOURCE_ATTRIBUTES
       - OTEL_SERVICE_NAME=fraud-detection
+      # See the note on the ad service. Instance name must stay
+      # otlp-fraud-detection-fr.
+      - JAVA_TOOL_OPTIONS=-javaagent:/usr/src/app/fusionreactor.jar=name=otlp-fraud-detection-fr,address=8088${FR_AGENT_OPTS:-} -agentpath:/usr/src/app/libfrjvmti.so${FR_LICENSE:+ -Dfrlicense=${FR_LICENSE} -Dfr.license.endpoint=${FR_LICENSE_ENDPOINT:-https://api.fusionreactor.io/licensing-api/} -Dfr.cloud.endpoint=${FR_CLOUD_ENDPOINT:-https://api.fusionreactor.io}}${FR_CLOUD_GROUP:+ -Dfr.cloud.group=${FR_CLOUD_GROUP}} -XX:MaxRAMPercentage=50
     depends_on:
       otel-collector:
         condition: service_started
@@ -457,18 +479,39 @@ services:
       - PAYMENT_PORT
       - FLAGD_HOST
       - FLAGD_PORT
-      - MYSQL_HOST=mysql
+      # payment reaches MySQL through Toxiproxy so its database connection can be
+      # slowed independently of quote, which still connects to mysql directly.
+      # payment-db is a network alias for the toxiproxy container: the hostname
+      # ends up in the DB client spans, so it needs to read naturally rather
+      # than saying "toxiproxy".
+      - MYSQL_HOST=payment-db
       - MYSQL_PORT=3306
       - MYSQL_USER=quotes_user
       - MYSQL_PASSWORD=quotes_password
       - MYSQL_DATABASE=quotes
       - OTEL_EXPORTER_OTLP_ENDPOINT
       - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
-      - OTEL_RESOURCE_ATTRIBUTES
+      # Scenario: "bad deployment" of payment. Both default to the normal
+      # values, so this block is inert until ./demo.sh deploy-bad sets them.
+      # PAYMENT_VERSION only changes service.version, nothing else about the
+      # service's identity - service.name stays "payment" so the Service
+      # Catalogue sees one service with two versions, which is the point.
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=opentelemetry-demo,service.version=${PAYMENT_VERSION:-${IMAGE_VERSION}},deployment.environment=${DEPLOYMENT_ENVIRONMENT:-webinar-demo}
+      - PAYMENT_ITEM_LOOKUPS=${PAYMENT_ITEM_LOOKUPS:-0}
+      # Second bad release (2.1.0): N+1 on quotes JOIN customers. Inert at 0.
+      - PAYMENT_CUSTOMER_LOOKUPS=${PAYMENT_CUSTOMER_LOOKUPS:-0}
+      # Per-query deadline for the database failure scenario. Set permanently
+      # rather than toggled, because nothing legitimately approaches 2s: normal
+      # queries are ~5ms, slow-db tops out at 904ms, and deploy-bad's 124
+      # queries are ~5ms each. ./demo.sh fail-db then only has to add latency.
+      # The code default is 0 (off) so the service is unchanged elsewhere.
+      - PAYMENT_QUERY_TIMEOUT_MS=${PAYMENT_QUERY_TIMEOUT_MS:-2000}
       - OTEL_SERVICE_NAME=payment
       - BUGSNAG_PAYMENT_API_KEY=${BUGSNAG_PAYMENT_API_KEY}
     depends_on:
       mysql:
+        condition: service_healthy
+      toxiproxy:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -521,7 +564,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3G
+          # Raised from 3G. With -XX:MaxRAMPercentage=75 in LUCEE_JAVA_OPTS the
+          # heap ceiling follows to ~3 GiB. At 3G the heap sawtoothed up to
+          # 2.12 GiB against a 2304 MiB ceiling - about 8% headroom at the
+          # peaks, which is too little to rely on during a live demo.
+          memory: 4G
     restart: unless-stopped
     ports:
       - "${QUOTE_PORT}:8888"
@@ -529,11 +576,37 @@ services:
     environment:
       - LUCEE_ADMIN_PASSWORD=password
       - LUCEE_REQUEST_TIMEOUT=300
+      # See the note on the ad service. Lucee reads LUCEE_JAVA_OPTS; the paths
+      # differ from the Java services. Instance name must stay
+      # quote-service-lucee.
+      - LUCEE_JAVA_OPTS=-javaagent:/opt/fusionreactor/fusionreactor.jar=name=quote-service-lucee,address=8088${FR_AGENT_OPTS:-} -agentpath:/opt/fusionreactor/libfrjvmti.so${FR_LICENSE:+ -Dfrlicense=${FR_LICENSE} -Dfr.license.endpoint=${FR_LICENSE_ENDPOINT:-https://api.fusionreactor.io/licensing-api/} -Dfr.cloud.endpoint=${FR_CLOUD_ENDPOINT:-https://api.fusionreactor.io}}${FR_CLOUD_GROUP:+ -Dfr.cloud.group=${FR_CLOUD_GROUP}} -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError
       - mysql-host=mysql
       - mysql-username=quotes_user
       - mysql-password=quotes_password
       - EMAIL_ADDR
       - BUGSNAG_API_KEY=${BUGSNAG_API_KEY}
+      # quote had no OTEL_* variables at all, so the FR agent's OTel exporters
+      # fell back to the SDK default of localhost:4317 and never reached the
+      # collector. Same endpoint and protocol as the other FR services.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${OTEL_COLLECTOR_HOST}:${OTEL_COLLECTOR_PORT_HTTP}
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      # Matches the compose service name and QUOTE_ADDR, so OpsPilot sees this
+      # service as "quote" like every other one. The FR instance name stays
+      # quote-service-lucee.
+      - OTEL_SERVICE_NAME=quote
+      - OTEL_RESOURCE_ATTRIBUTES
+    # An OOM-wedged JVM keeps its container in the "running" state, which is how
+    # a dead quote went unnoticed for 16 hours while it stalled the whole
+    # checkout path. ExitOnOutOfMemoryError above makes the JVM die so
+    # restart: unless-stopped can act; this healthcheck makes the real state
+    # visible to `docker ps` and `./demo.sh status` either way.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8888/health.cfm"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
     logging: *logging
 
   # Recommendation service
@@ -563,6 +636,10 @@ services:
       - OTEL_RESOURCE_ATTRIBUTES
       - OTEL_SERVICE_NAME=recommendation
       - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+      # The DEEP agent polls deep:43315, which does not exist in this stack.
+      # Left off unless a deep service is actually deployed. See the comment in
+      # src/recommendation/recommendation_server.py.
+      - DEEP_ENABLED=${DEEP_ENABLED:-false}
     depends_on:
       product-catalog:
         condition: service_started
@@ -672,7 +749,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 620M
+          # Raised from 620M: it was sitting at ~95%. KAFKA_HEAP_OPTS pins the
+          # heap at 400m, so the extra space goes to non-heap (metaspace,
+          # native, the OTel agent), which is where the pressure actually was.
+          memory: 1G
     restart: unless-stopped
     environment:
       - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://${KAFKA_HOST}:9092
@@ -721,7 +801,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          # Raised from 512M; it was sitting at 85% and everything depends on it.
+          memory: 768M
     restart: unless-stopped
     ports:
       - "3306:3306"
@@ -731,6 +812,82 @@ services:
       retries: 10
     logging: *logging
 
+
+  # Stock reconciliation batch job.
+  #
+  # SCENARIO SERVICE - behind the "scenarios" profile, so it does NOT start with
+  # `make start`. Start it explicitly:
+  #   docker compose ... --profile scenarios up -d stock-reconciler
+  #
+  # Uses the stock mysql:8.0 image and a shell script, so there is no image to
+  # build and nothing new to maintain. Puts a noticeable but strictly bounded
+  # load on MySQL on a schedule, with one START and one END log line per run.
+  stock-reconciler:
+    image: mysql:8.0
+    container_name: stock-reconciler
+    profiles: ["scenarios"]
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    restart: unless-stopped
+    environment:
+      # Every 90 minutes by default. Set to 300 for rehearsal.
+      - RECONCILE_INTERVAL_SECONDS=${RECONCILE_INTERVAL_SECONDS:-5400}
+      # Query batches per run. Each batch is 4 bounded aggregates, and the
+      # dominant cost is spawning the mysql client (~40ms), so 1500 batches is
+      # roughly a 60-second run. Sized so the load lasts long enough to survive
+      # a 5-minute rate window - at 120 batches the run finishes in ~5s and
+      # averages away to nothing before any alert can see it.
+      - RECONCILE_BATCHES=${RECONCILE_BATCHES:-1500}
+      # Hard ceiling. The run aborts past this many seconds, whatever else is
+      # outstanding - this is what stops it ever becoming removeoldquotes.cfm.
+      - RECONCILE_MAX_SECONDS=${RECONCILE_MAX_SECONDS:-120}
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=quotes_user
+      - MYSQL_PWD=quotes_password
+      - MYSQL_DATABASE=quotes
+    entrypoint: ["/bin/bash", "/scripts/reconcile.sh"]
+    volumes:
+      - ./src/stock-reconciler/reconcile.sh:/scripts/reconcile.sh:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    logging: *logging
+
+  # Toxiproxy - sits between payment and MySQL so the webinar's database
+  # slowdown can be injected on that one connection only. quote talks to MySQL
+  # directly and is unaffected, which is what keeps ColdFusion out of the story.
+  #
+  # The control API on 8474 is deliberately NOT published to the host; demo.sh
+  # reaches it with `docker exec toxiproxy /toxiproxy-cli`.
+  toxiproxy:
+    image: ${TOXIPROXY_IMAGE:-ghcr.io/shopify/toxiproxy:2.12.0}
+    container_name: toxiproxy
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/toxiproxy.json"]
+    deploy:
+      resources:
+        limits:
+          memory: 32M
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          # What payment connects to, and therefore what appears as
+          # server.address on its DB client spans.
+          - payment-db
+    volumes:
+      - ./src/toxiproxy/toxiproxy.json:/etc/toxiproxy/toxiproxy.json:ro
+    healthcheck:
+      test: ["CMD", "/toxiproxy-cli", "list"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      mysql:
+        condition: service_healthy
+    logging: *logging
 
   # ********************
   # Telemetry Components
@@ -807,6 +964,14 @@ services:
       - OTEL_COLLECTOR_PORT_GRPC
       - OTEL_COLLECTOR_PORT_HTTP
       - GOMEMLIMIT=160MiB
+      # OpsPilot destination. Values come from .env.override (gitignored);
+      # the collector refuses to start if either is unset.
+      - OPSPILOT_ENDPOINT
+      - OPSPILOT_AUTH
+      # Read-only MySQL monitoring user for the mysql receiver. Created by
+      # src/quote-cf/sql/003_otel_monitor_user.sql; override in .env.override.
+      - MYSQL_MONITOR_USER=${MYSQL_MONITOR_USER:-otel_monitor}
+      - MYSQL_MONITOR_PASSWORD=${MYSQL_MONITOR_PASSWORD:-otel_monitor_password}
 
   # Prometheus
   prometheus:

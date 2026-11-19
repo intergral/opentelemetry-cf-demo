@@ -1,0 +1,64 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# LOCAL ONLY — do not apply this file to the FusionReactor demo deployment.
+#
+# The OTel collector exports only to OpsPilot (see the exporters in
+# src/otel-collector/otelcol-config.yml), so jaeger, opensearch, prometheus and
+# grafana receive no demo telemetry at all — they only back local UIs. On a
+# laptop they cost ~2.7 GiB of memory limits and the opensearch health gate
+# makes every `up` slow.
+#
+# This overlay parks those four behind a compose profile that is off by default
+# and drops the depends_on edges that would otherwise drag them back in.
+# docker-compose.yml itself is untouched, so anything that does not pass
+# `-f docker-compose.trim.yml` — including the FR demo deployment and the
+# Kubernetes manifests — runs exactly as before.
+#
+#   make start                    # trimmed (default locally)
+#   make start TRIM=0             # full stack, all four back
+#   docker compose -f docker-compose.yml -f docker-compose.trim.yml \
+#     --profile local-backends up -d        # trimmed file, four back on demand
+#
+# Trade-off: http://localhost:8080/jaeger/ui and /grafana/ return 503 while
+# trimmed. Both Envoy clusters are STRICT_DNS, so Envoy still starts and the
+# demo UI, load generator and feature-flag UI are unaffected.
+
+services:
+  # Only jaeger + opensearch were listed here, so clearing the whole map is safe.
+  otel-collector:
+    depends_on: !reset null
+
+  # Keep the dependencies that matter, drop jaeger and grafana.
+  #
+  # Also bind the published ports to the loopback interface only. Upstream
+  # publishes both on 0.0.0.0, which puts them on every interface the laptop
+  # has - so anyone on the same network can reach them:
+  #   8080  the demo UI, and /feature - the flagd UI, which can turn faults on
+  #         and off with no authentication at all
+  #   10000 Envoy's admin interface, which exposes the full config dump, stats,
+  #         and endpoints that can drain or shut the proxy down
+  #
+  # `!override` is required: compose APPENDS to a ports list rather than
+  # replacing it, so without this the 0.0.0.0 bindings would remain alongside
+  # the loopback ones and nothing would actually be restricted.
+  frontend-proxy:
+    ports: !override
+      - "127.0.0.1:${ENVOY_PORT}:${ENVOY_PORT}"
+      - "127.0.0.1:10000:10000"
+    depends_on: !override
+      frontend:
+        condition: service_started
+      load-generator:
+        condition: service_started
+      flagd-ui:
+        condition: service_started
+
+  jaeger:
+    profiles: ["local-backends"]
+  opensearch:
+    profiles: ["local-backends"]
+  prometheus:
+    profiles: ["local-backends"]
+  grafana:
+    profiles: ["local-backends"]

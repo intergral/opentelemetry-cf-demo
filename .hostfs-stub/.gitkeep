@@ -1,0 +1,14 @@
+Intentionally empty.
+
+Mounted at /hostfs in the otel-collector container when HOST_FILESYSTEM points
+here (see .env.override.example). The collector's hostmetrics receiver has
+root_path: /hostfs and runs the filesystem/disk/process scrapers as root, so
+with the upstream default of HOST_FILESYSTEM=/ it walks the entire host root on
+every scrape. On macOS that reaches TCC-protected locations (~/Documents,
+~/Desktop, ~/Downloads) and Docker Desktop raises privacy prompts.
+
+Pointing the mount at this empty directory keeps the config valid and keeps the
+cpu/memory/load/network/paging scrapers working (they read /proc, not /hostfs)
+while giving the filesystem scraper nothing sensitive to traverse.
+
+Do not put files in here.

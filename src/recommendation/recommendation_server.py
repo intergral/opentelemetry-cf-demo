@@ -128,7 +128,19 @@ def check_feature_flag(flag_name: str):
 
 if __name__ == "__main__":
 
-    deep.start()
+    # DEEP is an optional Intergral integration. There is no "deep" service in
+    # this stack, so the agent's tracepoint poller fails DNS against deep:43315
+    # every 10 seconds, and the gRPC auto-instrumentation turns each failure
+    # into an errored client span on this service. That is what drove
+    # recommendation's span error rate to 64%.
+    #
+    # The agent has no supported disable flag, and DEEP_POLL_TIMER cannot be
+    # used to throttle it: os.getenv returns a str and RepeatedTimer._time does
+    # arithmetic on it, so setting it kills the timer thread with a TypeError.
+    # So gate the start on config instead. Set DEEP_ENABLED=true wherever a
+    # deep service actually exists.
+    if os.environ.get("DEEP_ENABLED", "false").strip().lower() == "true":
+        deep.start()
     service_name = must_map_env('OTEL_SERVICE_NAME')
     api.set_provider(FlagdProvider(host=os.environ.get('FLAGD_HOST', 'flagd'), port=os.environ.get('FLAGD_PORT', 8013)))
     api.add_hooks([TracingHook()])
